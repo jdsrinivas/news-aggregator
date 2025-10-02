@@ -1,64 +1,58 @@
 import requests
 from datetime import datetime
 from .models import Keyword, NewsArticle
+import feedparser
+import re
 
 class NewsFetcher:
     def __init__(self):
-        # Using NewsAPI.org - Free tier allows 100 requests/day
-        # For production, users should get their own API key from https://newsapi.org
-        self.api_key = 'demo'  # Replace with actual API key
-        self.base_url = 'https://newsapi.org/v2/everything'
+        # Using RSS feeds from Google News (no API key required)
+        # For better results, get a free API key from https://newsapi.org
+        self.use_rss = True
     
     def fetch_news_for_keyword(self, keyword):
         """Fetch news articles for a specific keyword"""
         try:
-            params = {
-                'q': keyword.name,
-                'apiKey': self.api_key,
-                'language': 'en',
-                'sortBy': 'publishedAt',
-                'pageSize': 10
-            }
+            # Use Google News RSS feed (no API key required)
+            rss_url = f'https://news.google.com/rss/search?q={keyword.name}&hl=en-US&gl=US&ceid=US:en'
             
-            response = requests.get(self.base_url, params=params, timeout=10)
+            feed = feedparser.parse(rss_url)
+            articles_saved = 0
             
-            if response.status_code == 200:
-                data = response.json()
-                articles_saved = 0
+            for entry in feed.entries[:10]:  # Limit to 10 articles
+                # Skip articles without required fields
+                if not entry.get('link') or not entry.get('title'):
+                    continue
                 
-                for article_data in data.get('articles', []):
-                    # Skip articles without required fields
-                    if not article_data.get('url') or not article_data.get('title'):
-                        continue
-                    
-                    # Parse published date
-                    published_at = None
-                    if article_data.get('publishedAt'):
-                        try:
-                            published_at = datetime.fromisoformat(
-                                article_data['publishedAt'].replace('Z', '+00:00')
-                            )
-                        except:
-                            pass
-                    
-                    # Create or update article
-                    NewsArticle.objects.get_or_create(
-                        keyword=keyword,
-                        url=article_data['url'],
-                        defaults={
-                            'title': article_data.get('title', '')[:500],
-                            'description': article_data.get('description', ''),
-                            'source': article_data.get('source', {}).get('name', ''),
-                            'published_at': published_at,
-                            'image_url': article_data.get('urlToImage', ''),
-                        }
-                    )
-                    articles_saved += 1
+                # Parse published date
+                published_at = None
+                if entry.get('published_parsed'):
+                    try:
+                        published_at = datetime(*entry.published_parsed[:6])
+                    except:
+                        pass
                 
-                return articles_saved
-            else:
-                print(f"Error fetching news for {keyword.name}: {response.status_code}")
-                return 0
+                # Extract description
+                description = entry.get('summary', entry.get('description', ''))
+                if description:
+                    # Clean HTML tags from description
+                    description = re.sub('<[^<]+?>', '', description)
+                
+                # Create or update article
+                NewsArticle.objects.get_or_create(
+                    keyword=keyword,
+                    url=entry.link,
+                    defaults={
+                        'title': entry.title[:500],
+                        'description': description[:1000] if description else '',
+                        'source': entry.get('source', {}).get('title', 'Google News'),
+                        'published_at': published_at,
+                        'image_url': '',
+                    }
+                )
+                articles_saved += 1
+            
+            return articles_saved
                 
         except Exception as e:
             print(f"Exception fetching news for {keyword.name}: {str(e)}")
